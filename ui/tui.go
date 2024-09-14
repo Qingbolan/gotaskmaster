@@ -2,456 +2,536 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
+	"regexp"
 
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 	"github.com/qingbolan/gotaskmaster/process"
+	"github.com/shirou/gopsutil/cpu"
+	"github.com/shirou/gopsutil/mem"
 )
 
-var (
-	titleStyle = lipgloss.NewStyle().
-		MarginLeft(2).
-		Foreground(lipgloss.Color("#FAFAFA")).
-		Background(lipgloss.Color("#1a1a1a")).
-		Padding(0, 1)
-
-	itemStyle = lipgloss.NewStyle().
-		PaddingLeft(4).
-		Foreground(lipgloss.Color("#FAFAFA"))
-
-	selectedItemStyle = lipgloss.NewStyle().
-		PaddingLeft(2).
-		Foreground(lipgloss.Color("#000000")).
-		Background(lipgloss.Color("#61AFEF"))
-
-	errorStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FF5555")).
-		Bold(true)
-
-	infoStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#50FA7B"))
-
-	promptStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FF79C6"))
-
-	highlightStyle = lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FFB86C")).
-		Bold(true)
-
-	docStyle = lipgloss.NewStyle().Margin(1, 2)
-)
-
-type item struct {
-	title string
-	desc  string
+type TUI struct {
+	app            *tview.Application
+	pages          *tview.Pages
+	processList    *tview.List
+	processInfo    *tview.TextView
+	logView        *tview.TextView
+	commandInput   *tview.InputField
+	statusBar      *tview.TextView
+	errorCount     *tview.TextView
+	eventCount     *tview.TextView
+	systemStats    *tview.TextView
+	healthIndicator *tview.TextView
+	manager        *process.Manager
+	currentProcess *process.Process
 }
 
-func (i item) Title() string       { return i.title }
-func (i item) Description() string { return i.desc }
-func (i item) FilterValue() string { return i.title }
-
-type viewState int
-
-const (
-	stateList viewState = iota
-	stateAdd
-	stateEdit
-	stateConfirmDelete
-	stateViewDetails
-)
-
-type model struct {
-	list           list.Model
-	textInput      textinput.Model
-	pm             *process.Manager
-	state          viewState
-	selectedProc   *process.Process
-	quitting       bool
-	err            error
-}
-
-func initialModel(pm *process.Manager) model {
-	ti := textinput.New()
-	ti.Placeholder = "Add new process (name,command,args,env,maxInstances)"
-	ti.Focus()
-
-	items := []list.Item{}
-	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
-	l.Title = "Process Manager"
-
-	m := model{
-		list:      l,
-		textInput: ti,
-		pm:        pm,
-		state:     stateList,
+func NewTUI(manager *process.Manager) *TUI {
+	tui := &TUI{
+		app:     tview.NewApplication(),
+		pages:   tview.NewPages(),
+		manager: manager,
 	}
-
-	m.updateItems()
-
-	return m
+	tui.setupUI()
+	return tui
 }
 
-func (m model) Init() tea.Cmd {
-	return nil
+func (t *TUI) setupUI() {
+	// Main layout
+	mainFlex := tview.NewFlex().SetDirection(tview.FlexRow)
+
+	// Top bar with error and event counts
+	topBar := tview.NewFlex().SetDirection(tview.FlexColumn)
+	t.errorCount = tview.NewTextView().SetTextColor(tcell.ColorRed)
+	t.eventCount = tview.NewTextView().SetTextColor(tcell.ColorGreen)
+	t.systemStats = tview.NewTextView().SetTextColor(tcell.ColorYellow)
+	topBar.AddItem(t.errorCount, 0, 1, false).
+		AddItem(t.eventCount, 0, 1, false).
+		AddItem(t.systemStats, 0, 2, false)
+
+	// Process list, info, and logs
+	middleFlex := tview.NewFlex().SetDirection(tview.FlexColumn)
+	t.processList = tview.NewList().
+		ShowSecondaryText(false).
+		SetHighlightFullLine(true).
+		SetSelectedFunc(t.onProcessSelected)
+	
+	rightFlex := tview.NewFlex().SetDirection(tview.FlexRow)
+	t.processInfo = tview.NewTextView().
+		SetDynamicColors(true).
+		SetRegions(true).
+		SetWordWrap(true)
+	t.healthIndicator = tview.NewTextView().
+		SetDynamicColors(true).
+		SetTextAlign(tview.AlignCenter)
+	t.logView = tview.NewTextView().
+		SetDynamicColors(true).
+		SetRegions(true).
+		SetWordWrap(true).
+		SetChangedFunc(func() {
+			t.app.Draw()
+		})
+
+	rightFlex.AddItem(t.healthIndicator, 1, 0, false).
+		AddItem(t.processInfo, 0, 2, false).
+		AddItem(t.logView, 0, 3, false)
+
+	middleFlex.AddItem(t.processList, 0, 1, true).
+		AddItem(rightFlex, 0, 2, false)
+
+	// Command input
+	t.commandInput = tview.NewInputField().
+		SetLabel("Command: ").
+		SetFieldWidth(0).
+		SetPlaceholder("Enter command (e.g., [s]start, [t]stop, [r]restart, [q]quit)").
+		SetFieldTextColor(tcell.ColorWhite).
+		SetPlaceholderTextColor(tcell.ColorYellow).
+		SetDoneFunc(t.onCommandEntered)
+
+	// Status bar
+	t.statusBar = tview.NewTextView().
+		SetTextColor(tcell.ColorYellow)
+
+	// Add all components to main layout
+	mainFlex.AddItem(topBar, 1, 1, false).
+		AddItem(middleFlex, 0, 1, true).
+		AddItem(t.commandInput, 1, 1, false).
+		AddItem(t.statusBar, 1, 1, false)
+
+	// Set up pages
+	t.pages.AddPage("main", mainFlex, true, true)
+
+	// Set up key bindings
+	t.setupKeyBindings()
+
+	t.app.SetRoot(t.pages, true).EnableMouse(true)
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
+func (t *TUI) setupKeyBindings() {
+    t.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+        switch event.Key() {
+		case 'q':
+        case tcell.KeyCtrlC:
+            t.app.Stop()
+        case tcell.KeyCtrlR:
+            t.refreshProcessList()
+        case tcell.KeyCtrlL:
+            t.showLogView()
+        case tcell.KeyCtrlE:
+            t.showConfigEditor()
+        case tcell.KeyCtrlH:
+            t.showHelp()
+        }
+        return event
+    })
 
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			m.quitting = true
-			return m, tea.Quit
-		case "esc":
-			if m.state != stateList {
-				m.state = stateList
-				m.err = nil
-				m.updateItems()
-				return m, nil
+    t.processList.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+        switch event.Rune() {
+        case 's', 't', 'r':
+            if process := t.getSelectedProcess(); process != nil {
+                switch event.Rune() {
+                case 's':
+                    t.startSelectedProcess()
+                case 't':
+                    t.stopSelectedProcess()
+                case 'r':
+                    t.restartSelectedProcess()
+                }
+                t.refreshProcessList()
+            }
+        case 'e':
+            t.showConfigEditor()
+        case 'l':
+            t.showLogView()
+        }
+        return event
+    })
+}
+
+
+func (t *TUI) updateProcessInfo(p *process.Process) {
+	if p == nil {
+		t.processInfo.SetText("No process selected")
+		t.healthIndicator.SetText("")
+		return
+	}
+	
+	status := ""
+	switch p.Status {
+	case process.StatusRunning:
+		status = "● Running"
+	case process.StatusStopping:
+		status = "○ Stopped"
+	default:
+		status = "◍ Unknown"
+	}
+	
+	info := fmt.Sprintf("Name: %s\nStatus: %s\nCommand: %s\nArgs: %v\nWork Dir: %s\nInstances: %d/%d\nError Count: %d\nLast Error: %s\nAuto Start: %v\n",
+		p.Name, status, p.Command, p.Args, p.WorkDir, p.Instances, p.MaxInstances, p.ErrorCount, p.LastError, p.AutoStart)
+	t.processInfo.SetText(info)
+}
+
+
+func (t *TUI) Run() error {
+	t.refreshProcessList()
+	go t.periodicUpdates()
+	return t.app.Run()
+}
+
+func (t *TUI) periodicUpdates() {
+	ticker := time.NewTicker(1 * time.Second)
+	for range ticker.C {
+		t.app.QueueUpdateDraw(func() {
+			t.refreshProcessList()
+			t.updateErrorCount()
+			t.updateEventCount()
+			t.updateSystemStats()
+			if t.currentProcess != nil {
+				t.updateProcessInfo(t.currentProcess)
+				t.updateLogView(t.currentProcess)
 			}
-		case "enter":
-			return m.handleEnter()
-		case "a":
-			if m.state == stateList {
-				m.state = stateAdd
-				m.textInput.SetValue("")
-				m.textInput.Focus()
-				return m, textinput.Blink
-			}
-		case "e":
-			if m.state == stateList {
-				return m.handleEdit()
-			}
-		case "d":
-			if m.state == stateList {
-				return m.handleDelete()
-			}
-		case "v":
-			if m.state == stateList {
-				return m.handleViewDetails()
-			}
-		case "s":
-			if m.state == stateList {
-				return m.handleStartProcess()
-			}
-		case "p":
-			if m.state == stateList {
-				return m.handleStopProcess()
-			}
-		case "r":
-			if m.state == stateList {
-				return m.handleRestartProcess()
-			}
-		}
-
-	case tea.WindowSizeMsg:
-		h, v := docStyle.GetFrameSize()
-		m.list.SetSize(msg.Width-h, msg.Height-v)
+		})
 	}
-
-	if m.state == stateAdd || m.state == stateEdit {
-		m.textInput, cmd = m.textInput.Update(msg)
-	} else {
-		m.list, cmd = m.list.Update(msg)
-	}
-
-	return m, cmd
 }
 
-func (m model) handleEnter() (tea.Model, tea.Cmd) {
-	switch m.state {
-	case stateAdd:
-		m.addNewProcess(m.textInput.Value())
-		m.state = stateList
-		m.updateItems()
-	case stateEdit:
-		m.editProcess(m.textInput.Value())
-		m.state = stateList
-		m.updateItems()
-	case stateConfirmDelete:
-		if m.selectedProc != nil {
-			if err := m.pm.DeleteProcess(m.selectedProc.Name); err != nil {
-				m.err = err
-			}
-			m.state = stateList
-			m.updateItems()
-		}
-	}
-	return m, nil
+func (t *TUI) updateSystemStats() {
+	cpuPercent, _ := cpu.Percent(0, false)
+	memInfo, _ := mem.VirtualMemory()
+	
+	stats := fmt.Sprintf("CPU: %.2f%% | MEM: %.2f%%", cpuPercent[0], memInfo.UsedPercent)
+	t.systemStats.SetText(stats)
 }
 
-func (m model) handleEdit() (tea.Model, tea.Cmd) {
-	selected := m.list.SelectedItem()
-	if selected != nil {
-		proc, err := m.pm.GetProcess(selected.(item).title)
-		if err != nil {
-			m.err = err
-			return m, nil
-		}
-		m.state = stateEdit
-		m.selectedProc = proc
-		m.textInput.SetValue(fmt.Sprintf("%s,%s,%s,%s,%d",
-			proc.Name, proc.Command, strings.Join(proc.Args, " "),
-			strings.Join(proc.Env, " "), proc.MaxInstances))
-		m.textInput.Focus()
-		return m, textinput.Blink
-	}
-	m.err = fmt.Errorf("no process selected for editing")
-	return m, nil
+
+
+func (t *TUI) startSelectedProcess() {
+    if process := t.getSelectedProcess(); process != nil {
+        t.showMessage(fmt.Sprintf("Attempting to start process: %s", process.Name))
+        if err := t.manager.StartProcess(process.Name); err != nil {
+            t.showError(fmt.Sprintf("Failed to start process %s: %v", process.Name, err))
+        } else {
+            t.showMessage(fmt.Sprintf("Process %s started successfully", process.Name))
+        }
+    } else {
+        t.showError("No process selected or process not found")
+    }
 }
 
-func (m model) handleDelete() (tea.Model, tea.Cmd) {
-	selected := m.list.SelectedItem()
-	if selected != nil {
-		proc, err := m.pm.GetProcess(selected.(item).title)
-		if err != nil {
-			m.err = err
-			return m, nil
-		}
-		m.state = stateConfirmDelete
-		m.selectedProc = proc
-		return m, nil
-	}
-	m.err = fmt.Errorf("no process selected for deletion")
-	return m, nil
+func (t *TUI) stopSelectedProcess() {
+    if process := t.getSelectedProcess(); process != nil {
+        t.showMessage(fmt.Sprintf("Attempting to stop process: %s", process.Name))
+        if err := t.manager.StopProcess(process.Name); err != nil {
+            t.showError(fmt.Sprintf("Failed to stop process %s: %v", process.Name, err))
+        } else {
+            t.showMessage(fmt.Sprintf("Process %s stopped successfully", process.Name))
+        }
+    } else {
+        t.showError("No process selected or process not found")
+    }
 }
 
-func (m model) handleViewDetails() (tea.Model, tea.Cmd) {
-	selected := m.list.SelectedItem()
-	if selected != nil {
-		proc, err := m.pm.GetProcess(selected.(item).title)
-		if err != nil {
-			m.err = err
-			return m, nil
-		}
-		m.state = stateViewDetails
-		m.selectedProc = proc
-		return m, nil
-	}
-	m.err = fmt.Errorf("no process selected for viewing details")
-	return m, nil
+func (t *TUI) restartSelectedProcess() {
+    if process := t.getSelectedProcess(); process != nil {
+        t.showMessage(fmt.Sprintf("Attempting to restart process: %s", process.Name))
+        if err := t.manager.RestartProcess(process.Name); err != nil {
+            t.showError(fmt.Sprintf("Failed to restart process %s: %v", process.Name, err))
+        } else {
+            t.showMessage(fmt.Sprintf("Process %s restarted successfully", process.Name))
+        }
+    } else {
+        t.showError("No process selected or process not found")
+    }
 }
 
-func (m model) handleStartProcess() (tea.Model, tea.Cmd) {
-	selected := m.list.SelectedItem()
-	if selected != nil {
-		if err := m.pm.StartProcess(selected.(item).title); err != nil {
-			m.err = err
-		}
-		m.updateItems()
-	} else {
-		m.err = fmt.Errorf("no process selected to start")
-	}
-	return m, nil
+func (t *TUI) getSelectedProcess() *process.Process {
+    index := t.processList.GetCurrentItem()
+    if index == -1 {
+        t.showError("No process selected")
+        return nil
+    }
+    text, _ := t.processList.GetItemText(index)
+    
+    processName := extractProcessName(text)
+    if processName == "" {
+        t.showError("Invalid process name format")
+        return nil
+    }
+    
+    t.showMessage(fmt.Sprintf("Attempting to get process: '%s'", processName))
+    
+    process, err := t.manager.GetProcess(processName)
+    if err != nil {
+        t.showError(fmt.Sprintf("Failed to get process '%s': %v", processName, err))
+        return nil
+    }
+    return process
 }
 
-func (m model) handleStopProcess() (tea.Model, tea.Cmd) {
-	selected := m.list.SelectedItem()
-	if selected != nil {
-		if err := m.pm.StopProcess(selected.(item).title); err != nil {
-			m.err = err
-		}
-		m.updateItems()
-	} else {
-		m.err = fmt.Errorf("no process selected to stop")
-	}
-	return m, nil
+func (t *TUI) refreshProcessList() {
+    t.processList.Clear()
+    for _, p := range t.manager.GetProcesses() {
+        status := ""
+        switch p.Status {
+        case process.StatusRunning:
+            status = "● "
+        case process.StatusStopping:
+            status = "○ "
+        default:
+            status = "◍ "
+        }
+        itemText := fmt.Sprintf("%s%s", status, p.Name)
+        t.processList.AddItem(itemText, "", 0, nil)
+    }
 }
 
-func (m model) handleRestartProcess() (tea.Model, tea.Cmd) {
-	selected := m.list.SelectedItem()
-	if selected != nil {
-		if err := m.pm.RestartProcess(selected.(item).title); err != nil {
-			m.err = err
-		}
-		m.updateItems()
-	} else {
-		m.err = fmt.Errorf("no process selected to restart")
+func (t *TUI) onCommandEntered(key tcell.Key) {
+	if key != tcell.KeyEnter {
+		return
 	}
-	return m, nil
-}
+	command := t.commandInput.GetText()
+	t.commandInput.SetText("")
 
-func (m *model) addNewProcess(input string) {
-	parts := strings.Split(input, ",")
-	if len(parts) < 4 {
-		m.err = fmt.Errorf("invalid input: need at least 4 parts")
+	if t.currentProcess == nil {
+		t.showError("No process selected")
 		return
 	}
 
-	name := strings.TrimSpace(parts[0])
-	command := strings.TrimSpace(parts[1])
-	args := strings.Fields(parts[2])
-	env := strings.Fields(parts[3])
-	maxInstances := 1
-	if len(parts) > 4 {
-		fmt.Sscanf(strings.TrimSpace(parts[4]), "%d", &maxInstances)
-	}
-
-	p := &process.Process{
-		Name:         name,
-		Command:      command,
-		Args:         args,
-		Env:          env,
-		MaxInstances: maxInstances,
-		State:        process.StateIdle,
-	}
-
-	if err := m.pm.AddProcess(p); err != nil {
-		m.err = err
+	switch command {
+	case "start":
+		t.manager.StartProcess(t.currentProcess.Name)
+	case "stop":
+		t.manager.StopProcess(t.currentProcess.Name)
+	case "restart":
+		t.manager.RestartProcess(t.currentProcess.Name)
+	default:
+		t.showError("Unknown command")
 	}
 }
 
-func (m *model) editProcess(input string) {
-	if m.selectedProc == nil {
-		m.err = fmt.Errorf("no process selected for editing")
+func (t *TUI) showLogView() {
+	if t.currentProcess == nil {
+		t.showError("No process selected")
 		return
 	}
 
-	parts := strings.Split(input, ",")
-	if len(parts) < 4 {
-		m.err = fmt.Errorf("invalid input: need at least 4 parts")
+	logModal := tview.NewModal().
+		SetText("Process Logs").
+		AddButtons([]string{"Close"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			t.pages.RemovePage("logs")
+		})
+
+	logs, err := t.manager.GetProcessLogs(t.currentProcess.Name, 1000)
+	if err != nil {
+		t.showError(fmt.Sprintf("Failed to get logs: %v", err))
 		return
 	}
 
-	name := strings.TrimSpace(parts[0])
-	command := strings.TrimSpace(parts[1])
-	args := strings.Fields(parts[2])
-	env := strings.Fields(parts[3])
-	maxInstances := 1
-	if len(parts) > 4 {
-		fmt.Sscanf(strings.TrimSpace(parts[4]), "%d", &maxInstances)
-	}
+	logText := tview.NewTextView().
+		SetDynamicColors(true).
+		SetRegions(true).
+		SetWordWrap(true).
+		SetText(strings.Join(logs, "\n"))
 
-	newProc := &process.Process{
-		Name:         name,
-		Command:      command,
-		Args:         args,
-		Env:          env,
-		MaxInstances: maxInstances,
-		State:        m.selectedProc.State,
-		Instances:    m.selectedProc.Instances,
-		ErrorCount:   m.selectedProc.ErrorCount,
-		LastError:    m.selectedProc.LastError,
-	}
+	flex := tview.NewFlex().
+		AddItem(logText, 0, 1, true)
 
-	if err := m.pm.ModifyProcess(m.selectedProc.Name, newProc); err != nil {
-		m.err = err
-	}
+	t.pages.AddPage("logs", tview.NewFlex().
+		AddItem(nil, 0, 1, false).
+		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
+			AddItem(nil, 0, 1, false).
+			AddItem(flex, 0, 8, true).
+			AddItem(logModal, 3, 1, false).
+			AddItem(nil, 0, 1, false), 0, 8, true).
+		AddItem(nil, 0, 1, false), true, true)
 }
 
-func (m *model) updateItems() {
-	processes := m.pm.GetProcesses()
-	items := make([]list.Item, len(processes))
-	for i, p := range processes {
-		stateStr := p.State.String()
-		stateStyle := infoStyle
-		if p.State == process.StateError {
-			stateStyle = errorStyle
-		} else if p.State == process.StateRunning {
-			stateStyle = highlightStyle
+func (t *TUI) showConfigEditor() {
+	if t.currentProcess == nil {
+		t.showError("No process selected")
+		return
+	}
+
+	form := tview.NewForm()
+	form.AddInputField("Command", t.currentProcess.Command, 0, nil, nil)
+	form.AddInputField("Args", strings.Join(t.currentProcess.Args, " "), 0, nil, nil)
+	form.AddInputField("Work Dir", t.currentProcess.WorkDir, 0, nil, nil)
+	form.AddInputField("Max Instances", fmt.Sprintf("%d", t.currentProcess.MaxInstances), 0, nil, nil)
+	form.AddCheckbox("Auto Start", t.currentProcess.AutoStart, nil)
+
+	saveFunc := func() {
+		command := form.GetFormItemByLabel("Command").(*tview.InputField).GetText()
+		args := strings.Fields(form.GetFormItemByLabel("Args").(*tview.InputField).GetText())
+		workDir := form.GetFormItemByLabel("Work Dir").(*tview.InputField).GetText()
+		maxInstances, _ := strconv.Atoi(form.GetFormItemByLabel("Max Instances").(*tview.InputField).GetText())
+		autoStart := form.GetFormItemByLabel("Auto Start").(*tview.Checkbox).IsChecked()
+
+		updatedConfig := &process.Process{
+			Name:         t.currentProcess.Name,
+			Command:      command,
+			Args:         args,
+			WorkDir:      workDir,
+			MaxInstances: maxInstances,
+			AutoStart:    autoStart,
 		}
 
-		items[i] = item{
-			title: p.Name,
-			desc: fmt.Sprintf(
-				"State: %s, Instances: %d/%d, Errors: %d, Command: %s\nLast Error: %s",
-				stateStyle.Render(stateStr), p.Instances, p.MaxInstances, p.ErrorCount, p.Command,
-				errorStyle.Render(p.LastError),
-			),
+		if err := t.manager.UpdateProcessConfig(t.currentProcess.Name, updatedConfig); err != nil {
+			t.showError(fmt.Sprintf("Failed to update config: %v", err))
+		} else {
+			t.showMessage("Configuration updated successfully")
+			t.updateProcessInfo(updatedConfig)
 		}
-	}
-	m.list.SetItems(items)
-}
-
-func (m model) View() string {
-	if m.quitting {
-		return "Goodbye!\n"
+		t.pages.RemovePage("config")
 	}
 
-	switch m.state {
-	case stateList:
-		return m.listView()
-	case stateAdd:
-		return m.addView()
-	case stateEdit:
-		return m.editView()
-	case stateConfirmDelete:
-		return m.confirmDeleteView()
-	case stateViewDetails:
-		return m.viewDetailsView()
+	form.AddButton("Save", saveFunc)
+	form.AddButton("Cancel", func() {
+		t.pages.RemovePage("config")
+	})
+
+	// 创建一个 Flex 布局来包含表单和标题
+	flex := tview.NewFlex().SetDirection(tview.FlexRow)
+	
+	// 添加标题
+	title := tview.NewTextView().
+		SetText("Edit Process Configuration").
+		SetTextAlign(tview.AlignCenter).
+		SetTextColor(tcell.ColorYellow)
+	
+	flex.AddItem(title, 1, 0, false).
+		AddItem(form, 0, 1, true)
+
+	// 将 Flex 布局添加到页面中
+	t.pages.AddPage("config", flex, true, true)
+}
+
+func (t *TUI) showError(message string) {
+	t.statusBar.SetText(fmt.Sprintf("[red]Error: %s[-]", message))
+	go func() {
+		time.Sleep(5 * time.Second)
+		t.app.QueueUpdateDraw(func() {
+			t.statusBar.SetText("")
+		})
+	}()
+}
+
+func (t *TUI) showMessage(message string) {
+	t.statusBar.SetText(fmt.Sprintf("[green]%s[-]", message))
+	go func() {
+		time.Sleep(5 * time.Second)
+		t.app.QueueUpdateDraw(func() {
+			t.statusBar.SetText("")
+		})
+	}()
+}
+
+func (t *TUI) updateErrorCount() {
+	totalErrors := 0
+	for _, p := range t.manager.GetProcesses() {
+		totalErrors += int(p.ErrorCount)
 	}
-
-	return ""
+	t.errorCount.SetText(fmt.Sprintf("Errors: %d", totalErrors))
 }
 
-func (m model) listView() string {
-	return fmt.Sprintf(
-		"%s\n\n%s\n\n%s\n\n%s",
-		titleStyle.Render("Process Manager"),
-		m.list.View(),
-		promptStyle.Render("a: add, e: edit, d: delete, v: view details, s: start, p: stop, r: restart, q: quit"),
-		errorStyle.Render(fmt.Sprintf("%v", m.err)),
-	)
+func (t *TUI) updateEventCount() {
+	// Assume we have a way to count events
+	eventCount := 0 // This should be replaced with actual event counting logic
+	t.eventCount.SetText(fmt.Sprintf("Events: %d", eventCount))
 }
 
-func (m model) addView() string {
-	return fmt.Sprintf(
-		"%s\n\n%s\n\n%s",
-		titleStyle.Render("Add New Process"),
-		m.textInput.View(),
-		promptStyle.Render("(Press Enter to add, Esc to cancel)"),
-	)
+// 在 TUI 中添加一个新方法来实时更新日志视图
+func (t *TUI) startLogWatcher(p *process.Process) {
+	go func() {
+		for {
+			time.Sleep(time.Second) // 每秒检查一次
+			if p != t.currentProcess {
+				return // 如果当前进程已经改变，停止观察
+			}
+			t.app.QueueUpdateDraw(func() {
+				t.updateLogView(p)
+			})
+		}
+	}()
 }
 
-func (m model) editView() string {
-	return fmt.Sprintf(
-		"%s\n\n%s\n\n%s",
-		titleStyle.Render("Edit Process"),
-		m.textInput.View(),
-		promptStyle.Render("(Press Enter to save, Esc to cancel)"),
-	)
-}
-
-func (m model) confirmDeleteView() string {
-	if m.selectedProc == nil {
-		return errorStyle.Render("No process selected for deletion")
+func (t *TUI) onProcessSelected(index int, _ string, _ string, _ rune) {
+	text, _ := t.processList.GetItemText(index)
+	processName := extractProcessName(text)
+	if processName == "" {
+		t.showError("Invalid process name format")
+		return
 	}
-	return fmt.Sprintf(
-		"%s\n\nAre you sure you want to delete the process '%s'?\n\n%s",
-		titleStyle.Render("Confirm Delete"),
-		m.selectedProc.Name,
-		promptStyle.Render("(Press Enter to confirm, Esc to cancel)"),
-	)
-}
-
-func (m model) viewDetailsView() string {
-	if m.selectedProc == nil {
-		return errorStyle.Render("No process selected for viewing details")
+	
+	p, err := t.manager.GetProcess(processName)
+	if err != nil {
+		t.showError(fmt.Sprintf("Failed to get process '%s': %v", processName, err))
+		return
 	}
-	return fmt.Sprintf(
-		"%s\n\nName: %s\nCommand: %s\nArgs: %v\nEnv: %v\nState: %s\nInstances: %d/%d\nError Count: %d\nLast Error: %s\n\n%s",
-		titleStyle.Render("Process Details"),
-		m.selectedProc.Name,
-		m.selectedProc.Command,
-		m.selectedProc.Args,
-		m.selectedProc.Env,
-		highlightStyle.Render(m.selectedProc.State.String()),
-		m.selectedProc.Instances,
-		m.selectedProc.MaxInstances,
-		m.selectedProc.ErrorCount,
-		errorStyle.Render(m.selectedProc.LastError),
-		promptStyle.Render("(Press Esc to return to list)"),
-	)
+	t.currentProcess = p
+	t.updateProcessInfo(p)
+	t.updateLogView(p)
+	t.startLogWatcher(p) // 开始观察日志更新
 }
 
-func Run(pm *process.Manager) error {
-	p := tea.NewProgram(initialModel(pm), tea.WithAltScreen())
-	_, err := p.Run()
-	return err
+func (t *TUI) updateLogView(p *process.Process) {
+	logs, err := t.manager.GetProcessLogs(p.Name, 100)
+	if err != nil {
+		t.showError(fmt.Sprintf("Failed to get logs: %v", err))
+		return
+	}
+	t.logView.SetText(strings.Join(logs, "\n"))
+	t.logView.ScrollToEnd()
+}
+
+
+
+func (t *TUI) showHelp() {
+    helpText := `
+GoTaskMaster Help
+
+Global Shortcuts:
+  Ctrl+C: Quit the application
+  Ctrl+R: Refresh process list
+  Ctrl+L: View process logs
+  Ctrl+E: Edit process configuration
+  Ctrl+H: Show this help
+
+Process List Navigation:
+  ↑/↓: Move selection
+  Enter: View process details
+
+Process Control:
+  s: Start selected process
+  t: Stop selected process
+  r: Restart selected process
+
+Configuration:
+  e: Edit selected process configuration
+
+Logs:
+  l: View logs of selected process
+
+Press any key to close this help.
+`
+    modal := tview.NewModal().
+        SetText(helpText).
+        AddButtons([]string{"Close"}).
+        SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+            t.pages.RemovePage("help")
+        })
+    
+    t.pages.AddPage("help", modal, true, true)
+}
+
+func extractProcessName(itemText string) string {
+    re := regexp.MustCompile(`[●○◍]\s+(\S+)`)
+    matches := re.FindStringSubmatch(itemText)
+    if len(matches) < 2 {
+        return ""
+    }
+    return matches[1]
 }

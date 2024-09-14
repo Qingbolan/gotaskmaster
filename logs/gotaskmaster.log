@@ -1,9 +1,0 @@
-2024/09/14 00:05:14 manager.go:234: Error writing to log file for process echo_hello: write logs\echo_hello.log: file already closed
-2024/09/14 00:05:14 manager.go:238: Error reading output for process echo_hello: read |0: file already closed
-2024/09/14 00:05:34 manager.go:247: Process echo_hello: Process exited with error: exit status 1
-2024/09/14 00:06:58 manager.go:238: Error reading output for process echo_hello: read |0: file already closed
-2024/09/14 00:06:58 manager.go:238: Error reading output for process echo_hello: read |0: file already closed
-2024/09/14 00:07:10 manager.go:247: Process echo_hello: Process exited with error: exit status 1
-2024/09/14 00:07:13 manager.go:247: Process python_script: Process exited with error: exit status 1
-2024/09/14 00:22:16 manager.go:234: Error writing to log file for process echo_hello: write logs\echo_hello.log: file already closed
-2024/09/14 00:22:16 manager.go:238: Error reading output for process echo_hello: read |0: file already closed

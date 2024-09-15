@@ -31,6 +31,6 @@ GoTaskMaster is particularly suitable for the following scenarios:
 ## Technical features
 
 - Developed using Go language, with excellent performance and cross-platform compatibility
-- Build a beautiful TUI based on the Bubble Tea framework
+- Build a beautiful TUI based on the tview framework
 - Using coroutines to achieve efficient concurrent task management
 - Modular design, easy to expand and customize

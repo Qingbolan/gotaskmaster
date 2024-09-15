@@ -1,23 +1,20 @@
-# GoTaskMaster Configuration File
-
-log_dir: "./logs"
-
+log_dir: logs
+config_dir: ""
 processes:
-  - name: "process1"
-    command: "echo"
-    args: ["Hello, World!"]
-    work_dir: "./"
-    env:
-      - "VAR1=value1"
-      - "VAR2=value2"
-    max_instances: 1
-    auto_start: true
-
-  - name: "process2"
-    command: "python"
-    args: ["script.py"]
-    work_dir: "./"
-    env:
-      - "PYTHON_ENV=production"
-    max_instances: 2
-    auto_start: false
+    - name: process1
+      command: /C
+      args:
+        - Hello,
+        - World!
+      env: []
+      work_dir: .
+      max_instances: 1
+      auto_start: true
+    - name: process2
+      command: python
+      args:
+        - script.py
+      env: []
+      work_dir: .
+      max_instances: 1
+      auto_start: true

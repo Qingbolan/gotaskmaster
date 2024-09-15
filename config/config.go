@@ -13,6 +13,7 @@ import (
 
 type Config struct {
 	LogDir    string           `json:"log_dir" yaml:"log_dir"`
+	ConfigDir string		   `json:"config_dir" yaml:"config_dir"`
 	Processes []ProcessConfig  `json:"processes" yaml:"processes"`
 }
 

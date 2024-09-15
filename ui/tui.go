@@ -2,32 +2,33 @@ package ui
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
-	"regexp"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/tview"
 	"github.com/qingbolan/gotaskmaster/process"
+	"github.com/rivo/tview"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/mem"
 )
 
 type TUI struct {
-	app            *tview.Application
-	pages          *tview.Pages
-	processList    *tview.List
-	processInfo    *tview.TextView
-	logView        *tview.TextView
-	commandInput   *tview.InputField
-	statusBar      *tview.TextView
-	errorCount     *tview.TextView
-	eventCount     *tview.TextView
-	systemStats    *tview.TextView
+	app             *tview.Application
+	pages           *tview.Pages
+	processList     *tview.List
+	processInfo     *tview.TextView
+	logView         *tview.TextView
+	commandInput    *tview.InputField
+	statusBar       *tview.TextView
+	errorCount      *tview.TextView
+	eventCount      *tview.TextView
+	systemStats     *tview.TextView
 	healthIndicator *tview.TextView
-	manager        *process.Manager
-	currentProcess *process.Process
+	manager         *process.Manager
+	currentProcess  *process.Process
+	selectedIndex   int
 }
 
 func NewTUI(manager *process.Manager) *TUI {
@@ -59,7 +60,7 @@ func (t *TUI) setupUI() {
 		ShowSecondaryText(false).
 		SetHighlightFullLine(true).
 		SetSelectedFunc(t.onProcessSelected)
-	
+
 	rightFlex := tview.NewFlex().SetDirection(tview.FlexRow)
 	t.processInfo = tview.NewTextView().
 		SetDynamicColors(true).
@@ -87,7 +88,7 @@ func (t *TUI) setupUI() {
 	t.commandInput = tview.NewInputField().
 		SetLabel("Command: ").
 		SetFieldWidth(0).
-		SetPlaceholder("Enter command (e.g., [s]start, [t]stop, [r]restart, [q]quit)").
+		SetPlaceholder("Enter command (e.g., [s]start, [t]stop, [r]restart, [e]edit)").
 		SetFieldTextColor(tcell.ColorWhite).
 		SetPlaceholderTextColor(tcell.ColorYellow).
 		SetDoneFunc(t.onCommandEntered)
@@ -112,46 +113,44 @@ func (t *TUI) setupUI() {
 }
 
 func (t *TUI) setupKeyBindings() {
-    t.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-        switch event.Key() {
-		case 'q':
-        case tcell.KeyCtrlC:
-            t.app.Stop()
-        case tcell.KeyCtrlR:
-            t.refreshProcessList()
-        case tcell.KeyCtrlL:
-            t.showLogView()
-        case tcell.KeyCtrlE:
-            t.showConfigEditor()
-        case tcell.KeyCtrlH:
-            t.showHelp()
-        }
-        return event
-    })
+	t.app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Key() {
+		case tcell.KeyCtrlC:
+			t.app.Stop()
+		case tcell.KeyCtrlR:
+			t.refreshProcessList()
+		case tcell.KeyCtrlL:
+			t.showLogView()
+		case tcell.KeyCtrlE:
+			t.showConfigEditor()
+		case tcell.KeyCtrlH:
+			t.showHelp()
+		}
+		return event
+	})
 
-    t.processList.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-        switch event.Rune() {
-        case 's', 't', 'r':
-            if process := t.getSelectedProcess(); process != nil {
-                switch event.Rune() {
-                case 's':
-                    t.startSelectedProcess()
-                case 't':
-                    t.stopSelectedProcess()
-                case 'r':
-                    t.restartSelectedProcess()
-                }
-                t.refreshProcessList()
-            }
-        case 'e':
-            t.showConfigEditor()
-        case 'l':
-            t.showLogView()
-        }
-        return event
-    })
+	t.processList.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		switch event.Rune() {
+		case 's', 't', 'r':
+			if process := t.getSelectedProcess(); process != nil {
+				switch event.Rune() {
+				case 's':
+					t.startSelectedProcess()
+				case 't':
+					t.stopSelectedProcess()
+				case 'r':
+					t.restartSelectedProcess()
+				}
+				t.refreshProcessList()
+			}
+		case 'e':
+			t.showConfigEditor()
+		case 'l':
+			t.showLogView()
+		}
+		return event
+	})
 }
-
 
 func (t *TUI) updateProcessInfo(p *process.Process) {
 	if p == nil {
@@ -159,22 +158,21 @@ func (t *TUI) updateProcessInfo(p *process.Process) {
 		t.healthIndicator.SetText("")
 		return
 	}
-	
+
 	status := ""
 	switch p.Status {
 	case process.StatusRunning:
-		status = "● Running"
+		status = "[green]● Running[-]"
 	case process.StatusStopping:
-		status = "○ Stopped"
+		status = "[red]❌ Stopped[-]"
 	default:
-		status = "◍ Unknown"
+		status = "[yellow]○ Unknown[-]"
 	}
-	
+
 	info := fmt.Sprintf("Name: %s\nStatus: %s\nCommand: %s\nArgs: %v\nWork Dir: %s\nInstances: %d/%d\nError Count: %d\nLast Error: %s\nAuto Start: %v\n",
 		p.Name, status, p.Command, p.Args, p.WorkDir, p.Instances, p.MaxInstances, p.ErrorCount, p.LastError, p.AutoStart)
 	t.processInfo.SetText(info)
 }
-
 
 func (t *TUI) Run() error {
 	t.refreshProcessList()
@@ -201,91 +199,96 @@ func (t *TUI) periodicUpdates() {
 func (t *TUI) updateSystemStats() {
 	cpuPercent, _ := cpu.Percent(0, false)
 	memInfo, _ := mem.VirtualMemory()
-	
+
 	stats := fmt.Sprintf("CPU: %.2f%% | MEM: %.2f%%", cpuPercent[0], memInfo.UsedPercent)
 	t.systemStats.SetText(stats)
 }
 
-
-
 func (t *TUI) startSelectedProcess() {
-    if process := t.getSelectedProcess(); process != nil {
-        t.showMessage(fmt.Sprintf("Attempting to start process: %s", process.Name))
-        if err := t.manager.StartProcess(process.Name); err != nil {
-            t.showError(fmt.Sprintf("Failed to start process %s: %v", process.Name, err))
-        } else {
-            t.showMessage(fmt.Sprintf("Process %s started successfully", process.Name))
-        }
-    } else {
-        t.showError("No process selected or process not found")
-    }
+	if process := t.getSelectedProcess(); process != nil {
+		t.showMessage(fmt.Sprintf("Attempting to start process: %s", process.Name))
+		if err := t.manager.StartProcess(process.Name); err != nil {
+			t.showError(fmt.Sprintf("Failed to start process %s: %v", process.Name, err))
+		} else {
+			t.showMessage(fmt.Sprintf("Process %s started successfully", process.Name))
+		}
+	} else {
+		t.showError("No process selected or process not found")
+	}
 }
 
 func (t *TUI) stopSelectedProcess() {
-    if process := t.getSelectedProcess(); process != nil {
-        t.showMessage(fmt.Sprintf("Attempting to stop process: %s", process.Name))
-        if err := t.manager.StopProcess(process.Name); err != nil {
-            t.showError(fmt.Sprintf("Failed to stop process %s: %v", process.Name, err))
-        } else {
-            t.showMessage(fmt.Sprintf("Process %s stopped successfully", process.Name))
-        }
-    } else {
-        t.showError("No process selected or process not found")
-    }
+	if process := t.getSelectedProcess(); process != nil {
+		t.showMessage(fmt.Sprintf("Attempting to stop process: %s", process.Name))
+		if err := t.manager.StopProcess(process.Name); err != nil {
+			t.showError(fmt.Sprintf("Failed to stop process %s: %v", process.Name, err))
+		} else {
+			t.showMessage(fmt.Sprintf("Process %s stopped successfully", process.Name))
+		}
+	} else {
+		t.showError("No process selected or process not found")
+	}
 }
 
 func (t *TUI) restartSelectedProcess() {
-    if process := t.getSelectedProcess(); process != nil {
-        t.showMessage(fmt.Sprintf("Attempting to restart process: %s", process.Name))
-        if err := t.manager.RestartProcess(process.Name); err != nil {
-            t.showError(fmt.Sprintf("Failed to restart process %s: %v", process.Name, err))
-        } else {
-            t.showMessage(fmt.Sprintf("Process %s restarted successfully", process.Name))
-        }
-    } else {
-        t.showError("No process selected or process not found")
-    }
+	if process := t.getSelectedProcess(); process != nil {
+		t.showMessage(fmt.Sprintf("Attempting to restart process: %s", process.Name))
+		if err := t.manager.RestartProcess(process.Name); err != nil {
+			t.showError(fmt.Sprintf("Failed to restart process %s: %v", process.Name, err))
+		} else {
+			t.showMessage(fmt.Sprintf("Process %s restarted successfully", process.Name))
+		}
+	} else {
+		t.showError("No process selected or process not found")
+	}
 }
 
 func (t *TUI) getSelectedProcess() *process.Process {
-    index := t.processList.GetCurrentItem()
-    if index == -1 {
-        t.showError("No process selected")
-        return nil
-    }
-    text, _ := t.processList.GetItemText(index)
-    
-    processName := extractProcessName(text)
-    if processName == "" {
-        t.showError("Invalid process name format")
-        return nil
-    }
-    
-    t.showMessage(fmt.Sprintf("Attempting to get process: '%s'", processName))
-    
-    process, err := t.manager.GetProcess(processName)
-    if err != nil {
-        t.showError(fmt.Sprintf("Failed to get process '%s': %v", processName, err))
-        return nil
-    }
-    return process
+	index := t.processList.GetCurrentItem()
+	if index == -1 {
+		t.showError("No process selected")
+		return nil
+	}
+	text, _ := t.processList.GetItemText(index)
+
+	processName := extractProcessName(text)
+	if processName == "" {
+		t.showError("Invalid process name format")
+		return nil
+	}
+
+	t.showMessage(fmt.Sprintf("Attempting to get process: '%s'", processName))
+
+	process, err := t.manager.GetProcess(processName)
+	if err != nil {
+		t.showError(fmt.Sprintf("Failed to get process '%s': %v", processName, err))
+		return nil
+	}
+	return process
 }
 
 func (t *TUI) refreshProcessList() {
-    t.processList.Clear()
-    for _, p := range t.manager.GetProcesses() {
-        status := ""
-        switch p.Status {
-        case process.StatusRunning:
-            status = "● "
-        case process.StatusStopping:
-            status = "○ "
-        default:
-            status = "◍ "
-        }
-        itemText := fmt.Sprintf("%s%s", status, p.Name)
-        t.processList.AddItem(itemText, "", 0, nil)
-    }
+	currentSelection := t.processList.GetCurrentItem()
+	t.processList.Clear()
+	for i, p := range t.manager.GetProcesses() {
+		status := ""
+		switch p.Status {
+		case process.StatusRunning:
+			status = "● "
+		case process.StatusStopping:
+			status = "❌ "
+		default:
+			status = "○ "
+		}
+		itemText := fmt.Sprintf("%s%s", status, p.Name)
+		t.processList.AddItem(itemText, "", 0, nil)
+		if i == t.selectedIndex {
+			t.processList.SetCurrentItem(i)
+		}
+	}
+	if currentSelection != -1 && currentSelection < t.processList.GetItemCount() {
+		t.processList.SetCurrentItem(currentSelection)
+	}
 }
 
 func (t *TUI) onCommandEntered(key tcell.Key) {
@@ -357,13 +360,42 @@ func (t *TUI) showConfigEditor() {
 	}
 
 	form := tview.NewForm()
-	form.AddInputField("Command", t.currentProcess.Command, 0, nil, nil)
-	form.AddInputField("Args", strings.Join(t.currentProcess.Args, " "), 0, nil, nil)
-	form.AddInputField("Work Dir", t.currentProcess.WorkDir, 0, nil, nil)
-	form.AddInputField("Max Instances", fmt.Sprintf("%d", t.currentProcess.MaxInstances), 0, nil, nil)
+
+	// Helper function to create an input field with delete key support
+	createInputField := func(label, value string) *tview.InputField {
+		field := tview.NewInputField().
+			SetLabel(label).
+			SetText(value).
+			SetFieldWidth(0)
+
+		field.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+			switch event.Key() {
+			case tcell.KeyDelete, tcell.KeyDEL:
+				text := field.GetText()
+				if len(text) > 0 {
+					// Simulate delete key functionality
+					field.SetText(text[:len(text)-1])
+					return nil
+				}
+			}
+			return event
+		})
+
+		return field
+	}
+
+	// Add input fields with delete key support
+	form.AddFormItem(createInputField("Name", t.currentProcess.Name))
+	form.AddFormItem(createInputField("Command", t.currentProcess.Command))
+	form.AddFormItem(createInputField("Args", strings.Join(t.currentProcess.Args, " ")))
+	form.AddFormItem(createInputField("Work Dir", t.currentProcess.WorkDir))
+	form.AddFormItem(createInputField("Max Instances", fmt.Sprintf("%d", t.currentProcess.MaxInstances)))
+	
+	// Checkbox doesn't need special handling for delete key
 	form.AddCheckbox("Auto Start", t.currentProcess.AutoStart, nil)
 
 	saveFunc := func() {
+		name := form.GetFormItemByLabel("Name").(*tview.InputField).GetText()
 		command := form.GetFormItemByLabel("Command").(*tview.InputField).GetText()
 		args := strings.Fields(form.GetFormItemByLabel("Args").(*tview.InputField).GetText())
 		workDir := form.GetFormItemByLabel("Work Dir").(*tview.InputField).GetText()
@@ -371,7 +403,7 @@ func (t *TUI) showConfigEditor() {
 		autoStart := form.GetFormItemByLabel("Auto Start").(*tview.Checkbox).IsChecked()
 
 		updatedConfig := &process.Process{
-			Name:         t.currentProcess.Name,
+			Name:         name,
 			Command:      command,
 			Args:         args,
 			WorkDir:      workDir,
@@ -384,6 +416,7 @@ func (t *TUI) showConfigEditor() {
 		} else {
 			t.showMessage("Configuration updated successfully")
 			t.updateProcessInfo(updatedConfig)
+			t.refreshProcessList()
 		}
 		t.pages.RemovePage("config")
 	}
@@ -393,19 +426,16 @@ func (t *TUI) showConfigEditor() {
 		t.pages.RemovePage("config")
 	})
 
-	// 创建一个 Flex 布局来包含表单和标题
 	flex := tview.NewFlex().SetDirection(tview.FlexRow)
-	
-	// 添加标题
+
 	title := tview.NewTextView().
 		SetText("Edit Process Configuration").
 		SetTextAlign(tview.AlignCenter).
 		SetTextColor(tcell.ColorYellow)
-	
+
 	flex.AddItem(title, 1, 0, false).
 		AddItem(form, 0, 1, true)
 
-	// 将 Flex 布局添加到页面中
 	t.pages.AddPage("config", flex, true, true)
 }
 
@@ -459,13 +489,14 @@ func (t *TUI) startLogWatcher(p *process.Process) {
 }
 
 func (t *TUI) onProcessSelected(index int, _ string, _ string, _ rune) {
+	t.selectedIndex = index
 	text, _ := t.processList.GetItemText(index)
 	processName := extractProcessName(text)
 	if processName == "" {
 		t.showError("Invalid process name format")
 		return
 	}
-	
+
 	p, err := t.manager.GetProcess(processName)
 	if err != nil {
 		t.showError(fmt.Sprintf("Failed to get process '%s': %v", processName, err))
@@ -474,7 +505,7 @@ func (t *TUI) onProcessSelected(index int, _ string, _ string, _ rune) {
 	t.currentProcess = p
 	t.updateProcessInfo(p)
 	t.updateLogView(p)
-	t.startLogWatcher(p) // 开始观察日志更新
+	t.startLogWatcher(p)
 }
 
 func (t *TUI) updateLogView(p *process.Process) {
@@ -487,10 +518,8 @@ func (t *TUI) updateLogView(p *process.Process) {
 	t.logView.ScrollToEnd()
 }
 
-
-
 func (t *TUI) showHelp() {
-    helpText := `
+	helpText := `
 GoTaskMaster Help
 
 Global Shortcuts:
@@ -517,21 +546,21 @@ Logs:
 
 Press any key to close this help.
 `
-    modal := tview.NewModal().
-        SetText(helpText).
-        AddButtons([]string{"Close"}).
-        SetDoneFunc(func(buttonIndex int, buttonLabel string) {
-            t.pages.RemovePage("help")
-        })
-    
-    t.pages.AddPage("help", modal, true, true)
+	modal := tview.NewModal().
+		SetText(helpText).
+		AddButtons([]string{"Close"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			t.pages.RemovePage("help")
+		})
+
+	t.pages.AddPage("help", modal, true, true)
 }
 
 func extractProcessName(itemText string) string {
-    re := regexp.MustCompile(`[●○◍]\s+(\S+)`)
-    matches := re.FindStringSubmatch(itemText)
-    if len(matches) < 2 {
-        return ""
-    }
-    return matches[1]
+	re := regexp.MustCompile(`[●❌○]\s+(\S+)`)
+	matches := re.FindStringSubmatch(itemText)
+	if len(matches) < 2 {
+		return ""
+	}
+	return matches[1]
 }

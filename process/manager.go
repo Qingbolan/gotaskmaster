@@ -14,7 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"encoding/json"
+	"gopkg.in/yaml.v3"
 
 	"github.com/qingbolan/gotaskmaster/config"
 )
@@ -73,7 +73,6 @@ type Process struct {
 	// cmd          *exec.Cmd
 	cancel       context.CancelFunc
 	mu           sync.RWMutex
-	logFile      *os.File
 	logMutex     sync.Mutex
 	// outputBuffer *bufio.Writer
 	exitChan     chan struct{}
@@ -88,7 +87,10 @@ type Manager struct {
 
 // NewManager creates a new process manager
 func NewManager(cfg *config.Config) *Manager {
-	m := &Manager{
+    if cfg.ConfigDir == "" {
+        cfg.ConfigDir = "./"
+    }
+		m := &Manager{
 		processes: make(map[string]*Process),
 		config:    cfg,
 	}
@@ -420,29 +422,85 @@ func (m *Manager) RestartProcess(name string) error {
 	return m.StartProcess(name)
 }
 
-// UpdateProcessConfig updates the configuration of a process
-func (m *Manager) UpdateProcessConfig(name string, updatedConfig *Process) error {
-	p, err := m.GetProcess(name)
+func (m *Manager) UpdateProcessConfig(oldName string, updatedConfig *Process) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Check if the process exists
+	oldProcess, exists := m.processes[oldName]
+	if !exists {
+		return fmt.Errorf("%w: %s", ErrProcessNotFound, oldName)
+	}
+
+	// Check if the process is running
+	if oldProcess.Status == StatusRunning {
+		return fmt.Errorf("%w: %s", ErrProcessRunning, oldName)
+	}
+
+	// If the name has changed, remove the old process and add the new one
+	if oldName != updatedConfig.Name {
+		delete(m.processes, oldName)
+		m.processes[updatedConfig.Name] = updatedConfig
+	} else {
+		// Update the existing process fields individually
+		oldProcess.Command = updatedConfig.Command
+		oldProcess.Args = updatedConfig.Args
+		oldProcess.Env = updatedConfig.Env
+		oldProcess.WorkDir = updatedConfig.WorkDir
+		oldProcess.MaxInstances = updatedConfig.MaxInstances
+		oldProcess.AutoStart = updatedConfig.AutoStart
+		// Don't update Status, ErrorCount, LastError, etc.
+	}
+
+	// Update the config file
+	return m.saveConfig()
+}
+
+// saveConfig saves the current process configurations to the config file in YAML format
+func (m *Manager) saveConfig() error {
+	// Ensure we have a valid config directory
+	configDir := m.config.ConfigDir
+	if configDir == "" {
+		// If ConfigDir is not set, use a default or return an error
+		return fmt.Errorf("config directory is not set")
+	}
+
+	configPath := filepath.Join(configDir, "config.yaml")
+
+	// Convert processes map to slice for YAML encoding
+	var processList []config.ProcessConfig
+	for _, p := range m.processes {
+		processList = append(processList, config.ProcessConfig{
+			Name:         p.Name,
+			Command:      p.Command,
+			Args:         p.Args,
+			Env:          p.Env,
+			WorkDir:      p.WorkDir,
+			MaxInstances: p.MaxInstances,
+			AutoStart:    p.AutoStart,
+		})
+	}
+
+	// Create the config structure
+	cfg := config.Config{
+		LogDir:    m.config.LogDir,
+		Processes: processList,
+	}
+
+	// Marshal the config to YAML
+	data, err := yaml.Marshal(&cfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("error marshaling config to YAML: %w", err)
 	}
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.Status == StatusRunning {
-		return fmt.Errorf("%w: %s", ErrProcessRunning, name)
+	// Write the YAML to the config file
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		return fmt.Errorf("error writing YAML config file: %w", err)
 	}
-
-	p.Command = updatedConfig.Command
-	p.Args = updatedConfig.Args
-	p.Env = updatedConfig.Env
-	p.WorkDir = updatedConfig.WorkDir
-	p.MaxInstances = updatedConfig.MaxInstances
-	p.AutoStart = updatedConfig.AutoStart
 
 	return nil
 }
+
 
 // GetProcessLogs retrieves the latest logs for a process
 func (m *Manager) GetProcessLogs(name string, lines int) ([]string, error) {
@@ -491,7 +549,7 @@ func readLastLines(file *os.File, n int) ([]string, error) {
 	return lines, nil
 }
 
-// ExportProcessConfig exports the configuration of a process to a file
+// ExportProcessConfig exports the configuration of a process to a YAML file
 func (m *Manager) ExportProcessConfig(name, filename string) error {
 	p, err := m.GetProcess(name)
 	if err != nil {
@@ -507,16 +565,15 @@ func (m *Manager) ExportProcessConfig(name, filename string) error {
 	}
 	defer file.Close()
 
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
+	encoder := yaml.NewEncoder(file)
 	if err := encoder.Encode(p); err != nil {
-		return fmt.Errorf("error encoding process config: %w", err)
+		return fmt.Errorf("error encoding process config to YAML: %w", err)
 	}
 
 	return nil
 }
 
-// ImportProcessConfig imports the configuration of a process from a file
+// ImportProcessConfig imports the configuration of a process from a YAML file
 func (m *Manager) ImportProcessConfig(filename string) error {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -525,15 +582,14 @@ func (m *Manager) ImportProcessConfig(filename string) error {
 	defer file.Close()
 
 	var p Process
-	decoder := json.NewDecoder(file)
+	decoder := yaml.NewDecoder(file)
 	if err := decoder.Decode(&p); err != nil {
-		return fmt.Errorf("error decoding process config: %w", err)
+		return fmt.Errorf("error decoding process config from YAML: %w", err)
 	}
 
 	return m.AddProcess(&p)
 }
 
-// ensureLogFileExists ensures that the log file for a process exists
 // ensureLogFileExists ensures that the log file for a process exists
 func (p *Process) ensureLogFileExists() error {
 	// 获取日志文件的目录
@@ -554,7 +610,7 @@ func (p *Process) ensureLogFileExists() error {
 		defer file.Close() // 确保文件被关闭
 
 		// 写入一个初始日志条目
-		timestamp := time.Now().Format("2006-01-02 15:04:05")
+		timestamp := time.Now().Format("2024-09-15 11:45:05")
 		_, err = file.WriteString(fmt.Sprintf("[%s] Log file created for process: %s\n", timestamp, p.Name))
 		if err != nil {
 			return fmt.Errorf("failed to write initial log entry: %w", err)
@@ -567,37 +623,6 @@ func (p *Process) ensureLogFileExists() error {
 	return nil
 }
 
-// GetProcessStatus returns the current status of a process
-func (m *Manager) GetProcessStatus(name string) (string, error) {
-p, err := m.GetProcess(name)
-if err != nil {
-	return "", err
-}
-
-p.mu.RLock()
-defer p.mu.RUnlock()
-
-status := fmt.Sprintf("Name: %s\nStatus: %s\nInstances: %d/%d\nError Count: %d\nLast Error: %s\n",
-	p.Name, p.Status, p.Instances, p.MaxInstances, p.ErrorCount, p.LastError)
-
-return status, nil
-}
-
-// GetAllProcessesStatus returns the current status of all processes
-func (m *Manager) GetAllProcessesStatus() string {
-m.mu.RLock()
-defer m.mu.RUnlock()
-
-var status strings.Builder
-for _, p := range m.processes {
-	p.mu.RLock()
-	status.WriteString(fmt.Sprintf("Name: %s\nStatus: %s\nInstances: %d/%d\nError Count: %d\nLast Error: %s\n\n",
-		p.Name, p.Status, p.Instances, p.MaxInstances, p.ErrorCount, p.LastError))
-	p.mu.RUnlock()
-}
-
-return status.String()
-}
 
 // CleanupProcessLogs removes old log files for a specific process
 func (m *Manager) CleanupProcessLogs(name string, olderThan time.Duration) error {
@@ -620,262 +645,4 @@ return filepath.Walk(logDir, func(path string, info os.FileInfo, err error) erro
 	}
 	return nil
 })
-}
-
-// RotateProcessLogs rotates the log files for a specific process
-func (m *Manager) RotateProcessLogs(name string) error {
-p, err := m.GetProcess(name)
-if err != nil {
-	return err
-}
-
-p.logMutex.Lock()
-defer p.logMutex.Unlock()
-
-if p.logFile != nil {
-	p.logFile.Close()
-	p.logFile = nil
-}
-
-timestamp := time.Now().Format("20060102-150405")
-newLogFile := fmt.Sprintf("%s.%s", p.LogFile, timestamp)
-
-if err := os.Rename(p.LogFile, newLogFile); err != nil && !os.IsNotExist(err) {
-	return fmt.Errorf("error rotating log file: %w", err)
-}
-
-return p.ensureLogFileExists()
-}
-
-// GetProcessMetrics returns the current metrics for a process
-func (m *Manager) GetProcessMetrics(name string) (float64, int64, time.Duration, error) {
-p, err := m.GetProcess(name)
-if err != nil {
-	return 0, 0, 0, err
-}
-
-p.mu.RLock()
-defer p.mu.RUnlock()
-
-return p.CPU, p.Memory, p.Uptime, nil
-}
-
-// UpdateProcessMetrics updates the metrics for a process
-func (m *Manager) UpdateProcessMetrics(name string, cpu float64, memory int64, uptime time.Duration) error {
-p, err := m.GetProcess(name)
-if err != nil {
-	return err
-}
-
-p.mu.Lock()
-defer p.mu.Unlock()
-
-p.CPU = cpu
-p.Memory = memory
-p.Uptime = uptime
-
-return nil
-}
-
-// SetMaxInstances sets the maximum number of instances for a process
-func (m *Manager) SetMaxInstances(name string, maxInstances int) error {
-p, err := m.GetProcess(name)
-if err != nil {
-	return err
-}
-
-p.mu.Lock()
-defer p.mu.Unlock()
-
-if p.Status == StatusRunning {
-	return fmt.Errorf("%w: %s", ErrProcessRunning, name)
-}
-
-p.MaxInstances = maxInstances
-return nil
-}
-
-// IsProcessRunning checks if a process is currently running
-func (m *Manager) IsProcessRunning(name string) (bool, error) {
-p, err := m.GetProcess(name)
-if err != nil {
-	return false, err
-}
-
-p.mu.RLock()
-defer p.mu.RUnlock()
-
-return p.Status == StatusRunning, nil
-}
-
-// WaitForProcess waits for a process to finish or until a timeout occurs
-func (m *Manager) WaitForProcess(name string, timeout time.Duration) error {
-p, err := m.GetProcess(name)
-if err != nil {
-	return err
-}
-
-timer := time.NewTimer(timeout)
-defer timer.Stop()
-
-select {
-case <-p.exitChan:
-	return nil
-case <-timer.C:
-	return fmt.Errorf("timeout waiting for process %s to finish", name)
-}
-}
-
-// SetEnvironmentVariable sets an environment variable for a process
-func (m *Manager) SetEnvironmentVariable(name, key, value string) error {
-p, err := m.GetProcess(name)
-if err != nil {
-	return err
-}
-
-p.mu.Lock()
-defer p.mu.Unlock()
-
-if p.Status == StatusRunning {
-	return fmt.Errorf("%w: %s", ErrProcessRunning, name)
-}
-
-for i, env := range p.Env {
-	if strings.HasPrefix(env, key+"=") {
-		p.Env[i] = key + "=" + value
-		return nil
-	}
-}
-
-p.Env = append(p.Env, key+"="+value)
-return nil
-}
-
-// GetEnvironmentVariables returns all environment variables for a process
-func (m *Manager) GetEnvironmentVariables(name string) (map[string]string, error) {
-p, err := m.GetProcess(name)
-if err != nil {
-	return nil, err
-}
-
-p.mu.RLock()
-defer p.mu.RUnlock()
-
-envMap := make(map[string]string)
-for _, env := range p.Env {
-	parts := strings.SplitN(env, "=", 2)
-	if len(parts) == 2 {
-		envMap[parts[0]] = parts[1]
-	}
-}
-
-return envMap, nil
-}
-
-// SetGroup sets the group for a process
-func (m *Manager) SetGroup(name, group string) error {
-p, err := m.GetProcess(name)
-if err != nil {
-	return err
-}
-
-p.mu.Lock()
-defer p.mu.Unlock()
-
-p.Group = group
-return nil
-}
-
-// GetProcessesByGroup returns all processes in a specific group
-func (m *Manager) GetProcessesByGroup(group string) []*Process {
-m.mu.RLock()
-defer m.mu.RUnlock()
-
-var processes []*Process
-for _, p := range m.processes {
-	if p.Group == group {
-		processes = append(processes, p)
-	}
-}
-
-return processes
-}
-
-// StartGroup starts all processes in a specific group
-func (m *Manager) StartGroup(group string) error {
-processes := m.GetProcessesByGroup(group)
-for _, p := range processes {
-	if err := m.StartProcess(p.Name); err != nil {
-		return fmt.Errorf("failed to start process %s in group %s: %w", p.Name, group, err)
-	}
-}
-return nil
-}
-
-// StopGroup stops all processes in a specific group
-func (m *Manager) StopGroup(group string) error {
-processes := m.GetProcessesByGroup(group)
-for _, p := range processes {
-	if err := m.StopProcess(p.Name); err != nil {
-		return fmt.Errorf("failed to stop process %s in group %s: %w", p.Name, group, err)
-	}
-}
-return nil
-}
-
-// RestartGroup restarts all processes in a specific group
-func (m *Manager) RestartGroup(group string) error {
-if err := m.StopGroup(group); err != nil {
-	return err
-}
-return m.StartGroup(group)
-}
-
-// GetProcessUptime returns the uptime of a process
-func (m *Manager) GetProcessUptime(name string) (time.Duration, error) {
-p, err := m.GetProcess(name)
-if err != nil {
-	return 0, err
-}
-
-p.mu.RLock()
-defer p.mu.RUnlock()
-
-return p.Uptime, nil
-}
-
-// ResetErrorCount resets the error count for a process
-func (m *Manager) ResetErrorCount(name string) error {
-p, err := m.GetProcess(name)
-if err != nil {
-	return err
-}
-
-p.mu.Lock()
-defer p.mu.Unlock()
-
-atomic.StoreInt32(&p.ErrorCount, 0)
-p.LastError = ""
-
-return nil
-}
-
-// GetProcessGroups returns all unique process groups
-func (m *Manager) GetProcessGroups() []string {
-m.mu.RLock()
-defer m.mu.RUnlock()
-
-groupSet := make(map[string]struct{})
-for _, p := range m.processes {
-	if p.Group != "" {
-		groupSet[p.Group] = struct{}{}
-	}
-}
-
-groups := make([]string, 0, len(groupSet))
-for group := range groupSet {
-	groups = append(groups, group)
-}
-
-return groups
 }

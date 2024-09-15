@@ -58,3 +58,51 @@
 2024/09/15 11:46:07 manager.go:236: Retrying to start process process1 in 5 seconds (attempt 2 of 3)...
 2024/09/15 11:46:08 manager.go:227: Process process1 exited with error: failed to start process: exec: "/C": executable file not found in %PATH%
 2024/09/15 11:46:08 manager.go:231: Process process1 failed to start after 3 attempts. Marking as error.
+2024/09/15 11:47:53 main.go:51: Starting GoTaskMaster
+2024/09/15 11:47:53 main.go:57: Configuration loaded from config.yaml
+2024/09/15 11:47:53 manager.go:98: Initializing manager with 2 processes from config
+2024/09/15 11:47:53 manager.go:114: Successfully added process: process1
+2024/09/15 11:47:53 manager.go:114: Successfully added process: process2
+2024/09/15 11:47:53 manager.go:172: Auto-starting process: process1
+2024/09/15 11:47:53 manager.go:172: Auto-starting process: process2
+2024/09/15 11:47:53 main.go:60: Process Manager initialized
+2024/09/15 11:47:53 manager.go:227: Process process1 exited with error: failed to start process: exec: "/C": executable file not found in %PATH%
+2024/09/15 11:47:53 manager.go:236: Retrying to start process process1 in 5 seconds (attempt 1 of 3)...
+2024/09/15 11:47:53 manager.go:297: Process process2 (PID: 29112) started successfully
+2024/09/15 11:47:53 manager.go:239: Process process2 exited normally
+2024/09/15 11:47:54 manager.go:227: Process process1 exited with error: failed to start process: exec: "/C": executable file not found in %PATH%
+2024/09/15 11:47:54 manager.go:236: Retrying to start process process1 in 5 seconds (attempt 2 of 3)...
+2024/09/15 11:47:55 manager.go:227: Process process1 exited with error: failed to start process: exec: "/C": executable file not found in %PATH%
+2024/09/15 11:47:55 manager.go:231: Process process1 failed to start after 3 attempts. Marking as error.
+2024/09/15 14:14:04 main.go:51: Starting GoTaskMaster
+2024/09/15 14:14:04 main.go:57: Configuration loaded from config.yaml
+2024/09/15 14:14:04 manager.go:98: Initializing manager with 2 processes from config
+2024/09/15 14:14:04 manager.go:114: Successfully added process: process1
+2024/09/15 14:14:04 manager.go:114: Successfully added process: process2
+2024/09/15 14:14:04 manager.go:172: Auto-starting process: process1
+2024/09/15 14:14:04 manager.go:172: Auto-starting process: process2
+2024/09/15 14:14:04 main.go:60: Process Manager initialized
+2024/09/15 14:14:04 manager.go:227: Process process1 exited with error: failed to start process: exec: "/C": executable file not found in %PATH%
+2024/09/15 14:14:04 manager.go:236: Retrying to start process process1 in 5 seconds (attempt 1 of 3)...
+2024/09/15 14:14:04 manager.go:297: Process process2 (PID: 14416) started successfully
+2024/09/15 14:14:04 manager.go:239: Process process2 exited normally
+2024/09/15 14:14:05 manager.go:227: Process process1 exited with error: failed to start process: exec: "/C": executable file not found in %PATH%
+2024/09/15 14:14:05 manager.go:236: Retrying to start process process1 in 5 seconds (attempt 2 of 3)...
+2024/09/15 14:14:06 manager.go:227: Process process1 exited with error: failed to start process: exec: "/C": executable file not found in %PATH%
+2024/09/15 14:14:06 manager.go:231: Process process1 failed to start after 3 attempts. Marking as error.
+2024/09/15 14:14:13 main.go:51: Starting GoTaskMaster
+2024/09/15 14:14:13 main.go:57: Configuration loaded from config.yaml
+2024/09/15 14:14:13 manager.go:98: Initializing manager with 2 processes from config
+2024/09/15 14:14:13 manager.go:114: Successfully added process: process1
+2024/09/15 14:14:13 manager.go:114: Successfully added process: process2
+2024/09/15 14:14:13 manager.go:172: Auto-starting process: process1
+2024/09/15 14:14:13 manager.go:172: Auto-starting process: process2
+2024/09/15 14:14:13 main.go:60: Process Manager initialized
+2024/09/15 14:14:13 manager.go:227: Process process1 exited with error: failed to start process: exec: "/C": executable file not found in %PATH%
+2024/09/15 14:14:13 manager.go:236: Retrying to start process process1 in 5 seconds (attempt 1 of 3)...
+2024/09/15 14:14:13 manager.go:297: Process process2 (PID: 23000) started successfully
+2024/09/15 14:14:13 manager.go:239: Process process2 exited normally
+2024/09/15 14:14:14 manager.go:227: Process process1 exited with error: failed to start process: exec: "/C": executable file not found in %PATH%
+2024/09/15 14:14:14 manager.go:236: Retrying to start process process1 in 5 seconds (attempt 2 of 3)...
+2024/09/15 14:14:15 manager.go:227: Process process1 exited with error: failed to start process: exec: "/C": executable file not found in %PATH%
+2024/09/15 14:14:15 manager.go:231: Process process1 failed to start after 3 attempts. Marking as error.
